@@ -15,6 +15,12 @@
 
 bool useOrtho = false;
 float orthoScale = 100.0f;
+float mouseSensitivity = 0.1f; // FPS mouse look sensitivity (degrees per pixel)
+static int LINE_THICKNESS = 3;  // grubsze linie w pikselach (ekran)
+
+// Global clip planes for perspective
+static const float NEAR_PLANE = 0.02f;
+static const float FAR_PLANE  = 500.0f;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //3d struct
@@ -39,29 +45,29 @@ typedef struct {
 //init camera
 Camera camera = {
   .physics = {
-    .position = {0.0f, 10.0f, -5.0f},
+    .position = {5.0f, 1.7f, -10.0f}, // wysokość jak postać w FPS (~1.7m wzrostu)
     .velocity = {0.0f, 0.0f, 0.0f},
     .force = {0.0f, 0.0f, 0.0f},
     .mass = 1.0f
   },
   .yaw = 0.0f,
   .pitch = 0.0f,
-  .fov = 60.f,
+  .fov = 90.f,
 };
 
-// Vertex vertexCube[] = {
-// //    x      y      z
-//   {-1.0f, -1.0f, -1.0f},// lewy-dolny-tył
-//   { 1.0f, -1.0f, -1.0f},// prawy-dolny-tył
-//   { 1.0f, 1.0f, -1.0f}, // prawy-góry-tył
-//   {-1.0f, 1.0f, -1.0f},// lewy-górny-tył
-//   {-1.0f, -1.0f, 1.0f},//lewy-dolny-przód
-//   { 1.0f, -1.0f, 1.0f},// prawy-dolny-przód
-//   { 1.0f, 1.0f, 1.0f}, // prawy-góry-przód
-//   {-1.0f, 1.0f, 1.0f},// lewy-górny-przód
-// };
+Vertex vertexCube[] = {
+//    x      y      z
+  {-1.0f, -1.0f, -1.0f},// lewy-dolny-tył
+  { 1.0f, -1.0f, -1.0f},// prawy-dolny-tył
+  { 1.0f, 1.0f, -1.0f}, // prawy-góry-tył
+  {-1.0f, 1.0f, -1.0f},// lewy-górny-tył
+  {-1.0f, -1.0f, 1.0f},//lewy-dolny-przód
+  { 1.0f, -1.0f, 1.0f},// prawy-dolny-przód
+  { 1.0f, 1.0f, 1.0f}, // prawy-góry-przód
+  {-1.0f, 1.0f, 1.0f},// lewy-górny-przód
+};
 
-static float zoom = 200.0f; 
+// removed unused zoom; FOV controls (W/E) adjust camera.fov directly
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 Vertex rotatePoint(Vertex p, float angleX, float angleY);
@@ -71,8 +77,13 @@ SDL_Point project(Vertex v, Camera cam);
 SDL_Point projectDynamic(Vertex v, Camera cam);
 void renderText(SDL_Renderer* renderer, const char* text, Vertex position,Camera cam, TTF_Font* font, SDL_Color color);
 void drawline(SDL_Renderer* renderer, Vertex v1, Vertex v2, Camera cam);
+void drawThickLine(SDL_Renderer* renderer, SDL_Point p1, SDL_Point p2, int thickness);
 void drawAxesWithLabels(SDL_Renderer* renderer, Camera cam, TTF_Font * font);
 void drawFloor(SDL_Renderer* renderer, Camera cam, int size, float spacing);
+// Helpers for clipping and camera-space projection
+Vertex toCameraSpace(Vertex v, Camera cam);
+bool clipLineToNearFar(Vertex* a, Vertex* b, float nearP, float farP);
+SDL_Point projectCameraSpace(Vertex r, Camera cam);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void updatePhysics(PhysicsObject* obj, float deltaTime) 
@@ -119,21 +130,23 @@ SDL_Point project(Vertex v, Camera cam){
     v.z - cam.physics.position.z,
   };
 
-  Vertex rotated = rotatePoint(relative, cam.pitch, cam.yaw);
+  Vertex r = rotatePoint(relative, cam.pitch, cam.yaw);
+  SDL_Point p = { -1000, -1000 };
+  if (r.z <= NEAR_PLANE || r.z >= FAR_PLANE) return p;
 
   float aspect = (float)WIDTH / HEIGHT;
   float fovRad = cam.fov *(M_PI/180.0f);
-  float tanHalfFOV = tanf(fovRad * 0.5f); 
-  SDL_Point p;
-  if(rotated.z > 0.1f) {
-    p.x =(int)((rotated.x / (rotated.z * tanHalfFOV *aspect)) * (WIDTH / 2)+ WIDTH/2);
-    p.y =(int)((-rotated.y / (rotated.z * tanHalfFOV)) * (HEIGHT/2) + HEIGHT /2);
-  }else {
-    p.x = -1000;
-    p.y = -1000;
-  }
+  float tanHalf = tanf(fovRad * 0.5f);
+
+  float x_ndc =  r.x / (r.z * tanHalf * aspect);
+  float y_ndc = -r.y / (r.z * tanHalf);    // minus = ekran Y w dół
+
+  // 4) NDC -> screen
+  p.x = (int)((x_ndc + 1.0f) * 0.5f * WIDTH);
+  p.y = (int)((y_ndc + 1.0f) * 0.5f * HEIGHT);
   return p;
 }
+
 void renderText(SDL_Renderer* renderer, const char* text, Vertex position,Camera cam, TTF_Font* font, SDL_Color color) {
   SDL_Point screenPos = project(position,cam);
   if (screenPos.x >= 0 && screenPos.x < WIDTH && screenPos.y >= 0 && screenPos.y < HEIGHT){
@@ -165,9 +178,23 @@ SDL_Point projectDynamic(Vertex v, Camera cam) {
 }
 void drawline(SDL_Renderer* renderer, Vertex v1, Vertex v2, Camera cam)  
 {
-  SDL_Point p1 = projectDynamic(v1,cam);
-  SDL_Point p2 = projectDynamic(v2,cam);
-  SDL_RenderDrawLine(renderer, p1.x, p1.y, p2.x, p2.y);
+  if (useOrtho) {
+    SDL_Point p1 = projectOrtho(v1, cam, orthoScale);
+    SDL_Point p2 = projectOrtho(v2, cam, orthoScale);
+    drawThickLine(renderer, p1, p2, LINE_THICKNESS);
+    return;
+  }
+
+  // Perspective path with near/far clipping in camera space
+  Vertex r1 = toCameraSpace(v1, cam);
+  Vertex r2 = toCameraSpace(v2, cam);
+  if (!clipLineToNearFar(&r1, &r2, NEAR_PLANE, FAR_PLANE)) {
+    return; // fully outside
+  }
+
+  SDL_Point p1 = projectCameraSpace(r1, cam);
+  SDL_Point p2 = projectCameraSpace(r2, cam);
+  drawThickLine(renderer, p1, p2, LINE_THICKNESS);
 }
 void drawAxesWithLabels(SDL_Renderer* renderer, Camera cam, TTF_Font * font) {
   Vertex origin = {0.0f,0.0f, 0.0f};
@@ -194,27 +221,27 @@ void drawAxesWithLabels(SDL_Renderer* renderer, Camera cam, TTF_Font * font) {
     SDL_SetRenderDrawColor(renderer,255,0,0,255);
     drawline(renderer, tickTop, tickBottom, cam);
     sprintf(label,"%d",i);
-    Vertex textPos = {-0.5f,i,0};
+    Vertex textPos = {i, -0.5f, 0};
     renderText(renderer,label, textPos, cam,font,colorX);
   }
 
   for(int i=1; i <=10; i++) {
-    Vertex tickTop = {i, 0.2f, 0};
-    Vertex tickBottom = {i, -0.2f,0};
+    Vertex tickTop = {0.2f, i, 0};
+    Vertex tickBottom = {-0.2f, i, 0};
     SDL_SetRenderDrawColor(renderer,0,255,0,255);
     drawline(renderer, tickTop, tickBottom, cam);
     sprintf(label,"%d",i);
-    Vertex textPos = {-0.5f,i,0};
+    Vertex textPos = {0, i, -0.5f};
     renderText(renderer,label, textPos, cam,font,colorY);
   }
 
   for(int i=1; i <=10; i++) {
-    Vertex tickTop = {i, 0.2f, 0};
-    Vertex tickBottom = {i, -0.2f,0};
+    Vertex tickTop = {0.2f, 0, i};
+    Vertex tickBottom = {-0.2f, 0, i};
     SDL_SetRenderDrawColor(renderer,0,0,255,255);
     drawline(renderer, tickTop, tickBottom, cam);
     sprintf(label,"%d",i);
-    Vertex textPos = {-0.5f,i,0};
+    Vertex textPos = {0, -0.5f, i};
     renderText(renderer,label, textPos, cam,font,colorZ);
   }
   renderText(renderer, "X", (Vertex){10.5f,0,0}, cam,font, colorX);
@@ -237,25 +264,132 @@ Vertex rotatePoint(Vertex p, float angleX, float angleY) {
   result.z = temp.y * sinf(radX) + temp.z * cosf(radX);
   return result;
 }
+
+// Convert world-space vertex to camera-space (translate by camera position, then rotate by yaw/pitch)
+Vertex toCameraSpace(Vertex v, Camera cam) {
+  Vertex relative = {
+    v.x - cam.physics.position.x,
+    v.y - cam.physics.position.y,
+    v.z - cam.physics.position.z,
+  };
+  return rotatePoint(relative, cam.pitch, cam.yaw);
+}
+
+// Clip line segment in camera space to [NEAR_PLANE, FAR_PLANE] in z
+bool clipLineToNearFar(Vertex* a, Vertex* b, float nearP, float farP) {
+  // Trivial reject
+  if (a->z <= nearP && b->z <= nearP) return false;
+  if (a->z >= farP  && b->z >= farP)  return false;
+
+  float dz = b->z - a->z;
+  // Clip to near plane
+  if (a->z < nearP && b->z > a->z) {
+    float t = (nearP - a->z) / dz;
+    a->x = a->x + t * (b->x - a->x);
+    a->y = a->y + t * (b->y - a->y);
+    a->z = nearP;
+  } else if (b->z < nearP && a->z > b->z) {
+    float t = (nearP - a->z) / dz;
+    b->x = a->x + t * (b->x - a->x);
+    b->y = a->y + t * (b->y - a->y);
+    b->z = nearP;
+  }
+
+  // Recompute dz after potential near clipping
+  dz = b->z - a->z;
+
+  // Clip to far plane
+  if (a->z > farP && b->z < a->z) {
+    float t = (farP - a->z) / dz;
+    a->x = a->x + t * (b->x - a->x);
+    a->y = a->y + t * (b->y - a->y);
+    a->z = farP;
+  } else if (b->z > farP && a->z < b->z) {
+    float t = (farP - a->z) / dz;
+    b->x = a->x + t * (b->x - a->x);
+    b->y = a->y + t * (b->y - a->y);
+    b->z = farP;
+  }
+
+  // After clipping, ensure the segment is still valid
+  if (a->z <= nearP && b->z <= nearP) return false;
+  if (a->z >= farP  && b->z >= farP)  return false;
+  return true;
+}
+
+// Project a camera-space point to screen
+SDL_Point projectCameraSpace(Vertex r, Camera cam) {
+  SDL_Point p = { -1000, -1000 };
+  if (r.z <= 0.0f) return p; // behind camera after clipping shouldn't happen
+
+  float aspect = (float)WIDTH / HEIGHT;
+  float fovRad = cam.fov * (M_PI / 180.0f);
+  float tanHalf = tanf(fovRad * 0.5f);
+
+  float x_ndc =  r.x / (r.z * tanHalf * aspect);
+  float y_ndc = -r.y / (r.z * tanHalf);
+
+  p.x = (int)((x_ndc + 1.0f) * 0.5f * WIDTH);
+  p.y = (int)((y_ndc + 1.0f) * 0.5f * HEIGHT);
+  return p;
+}
+
+// Rysuje linię o zadanej grubości w przestrzeni ekranu
+void drawThickLine(SDL_Renderer* renderer, SDL_Point p1, SDL_Point p2, int thickness) {
+  if (thickness <= 1) {
+    SDL_RenderDrawLine(renderer, p1.x, p1.y, p2.x, p2.y);
+    return;
+  }
+  float dx = (float)(p2.x - p1.x);
+  float dy = (float)(p2.y - p1.y);
+  float len = sqrtf(dx*dx + dy*dy);
+  if (len < 1e-3f) {
+    // Bardzo krótka linia -> narysuj kilka punktów wokół
+    int half = thickness / 2;
+    for (int oy = -half; oy <= half; ++oy) {
+      for (int ox = -half; ox <= half; ++ox) {
+        SDL_RenderDrawPoint(renderer, p1.x + ox, p1.y + oy);
+      }
+    }
+    return;
+  }
+  // wektor normalny (prostopadły), znormalizowany
+  float nx = -dy / len;
+  float ny =  dx / len;
+  int half = thickness / 2;
+  for (int i = -half; i <= half; ++i) {
+    int ox = (int)roundf(nx * i);
+    int oy = (int)roundf(ny * i);
+    SDL_RenderDrawLine(renderer, p1.x + ox, p1.y + oy, p2.x + ox, p2.y + oy);
+  }
+}
 void drawFloor(SDL_Renderer* renderer, Camera cam, int size, float spacing) {
   // Jaśniejszy kolor podłogi dla lepszej widoczności
   SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
 
-  // Rysowanie linii równoległych do osi Z (biegnących wzdłuż osi X)
+
   for (int i = -size; i <= size; i++) {
     Vertex start = {-size * spacing, FLOOR_HEIGHT, i * spacing};
     Vertex end = {size * spacing, FLOOR_HEIGHT, i * spacing};
     drawline(renderer, start, end, cam);
   }
-  
-  // Rysowanie linii równoległych do osi X (biegnących wzdłuż osi Z)
   for (int i = -size; i <= size; i++) {
     Vertex start = {i * spacing, FLOOR_HEIGHT, -size * spacing};
     Vertex end = {i * spacing, FLOOR_HEIGHT, size * spacing};
     drawline(renderer, start, end, cam);
   }
+
+
+  /*
+  for (int i = -size; i <= size; i++) {
+    Vertex start = {i * spacing, FLOOR_HEIGHT, -size * spacing};
+    Vertex end = {i * spacing, FLOOR_HEIGHT, size * spacing};
+    drawline(renderer, start, end, cam);
+  }
+
+  */
 }
-void checkFloorCollision(PhysicsObject* obj){
+  void checkFloorCollision(PhysicsObject* obj){
 
   if (obj->position.y < FLOOR_HEIGHT) {
       obj->position.y = FLOOR_HEIGHT;
@@ -304,6 +438,10 @@ int main()
     SDL_Quit();
     return 1;
    }
+   // Enable FPS-style relative mouse mode (captures cursor and provides relative motion)
+   if (SDL_SetRelativeMouseMode(SDL_TRUE) != 0) {
+     fprintf(stderr, "Nie udało się włączyć trybu względnego myszy: %s\n", SDL_GetError());
+   }
    TTF_Font* font = TTF_OpenFont("/usr/share/fonts/TTF/Hack-Regular.ttf",12);
    if(!font){
     printf("błąd ładowania czcionki: %s\n", TTF_GetError());
@@ -313,9 +451,7 @@ int main()
     SDL_Quit();
     return 1;
    }
-   // zmienne - kąty
-   float rotationX = 0.0f;
-   float rotationY = 0.0f;
+  // removed unused local rotation variables
 
    int quit = EXIT_SUCCESS;
    SDL_Event event;
@@ -335,54 +471,69 @@ int main()
           quit = 1;
         if (event.type == SDL_KEYDOWN) 
         {
-          float moveSpeed = 5.0f;
+          float moveSpeed = 1.0f;
           float rotationSpeed = 2.0f;
 
             switch(event.key.keysym.sym) 
             {
-              case SDLK_w:  // Do przodu
+              case SDLK_z:
                 camera.physics.position.z += moveSpeed;
                 break;
-              case SDLK_s:  // Do tyłu
+              case SDLK_a:
                 camera.physics.position.z -= moveSpeed;
                 break;
-              case SDLK_a:  // W lewo
+              case SDLK_c:  // Do przodu
+                camera.physics.position.y += moveSpeed;
+                break;
+              case SDLK_d:  // Do tyłu
+                camera.physics.position.y -= moveSpeed;
+                break;
+              case SDLK_x:  // W lewo
                 camera.physics.position.x -= moveSpeed;
                 break;
-              case SDLK_d:  // W prawo
+              case SDLK_s:  // W prawo
                 camera.physics.position.x += moveSpeed;
                 break;
-              case SDLK_UP:  // Obrót w górę
+              case SDLK_v:  // Obrót w górę
                 camera.pitch -= rotationSpeed;
                 break;
-              case SDLK_DOWN:  // Obrót w dół
+              case SDLK_f:  // Obrót w dół
                 camera.pitch += rotationSpeed;
                 break;
-              case SDLK_LEFT:  // Obrót w lewo
+              case SDLK_b:  // Obrót w lewo
                 camera.yaw -= rotationSpeed;
                 break;
-              case SDLK_RIGHT:  // Obrót w prawo
+              case SDLK_g:  // Obrót w prawo
                 camera.yaw += rotationSpeed;
                 break;
-              case SDLK_o: // Przełączanie projekcji
+              case SDLK_q: // Przełączanie projekcji
                 useOrtho = !useOrtho;
                 break;
-              case SDLK_e: // Zoom +
-                zoom += 100.0f;
+              case SDLK_w: // FOV + (mniejsze zbliżenie)
+                camera.fov += 5.0f;
+                if (camera.fov > 120.0f) camera.fov = 120.0f;
                 break;
-              case SDLK_q: // Zoom -
-                zoom -= 100.0f;
+              case SDLK_e: // FOV - (większe zbliżenie)
+                camera.fov -= 5.0f;
+                if (camera.fov < 30.0f) camera.fov = 30.0f;
                 break;
             }
         } 
         if (event.type == SDL_MOUSEMOTION)   
         {
-          if( event.motion.state & SDL_BUTTON(SDL_BUTTON_LEFT))
-            {
-              rotationY += event.motion.xrel * 1.0f; 
-              rotationX += event.motion.yrel * 1.1f;
-            }
-        
+          // FPS-style mouse look when in relative mouse mode
+          if (SDL_GetRelativeMouseMode()) {
+            camera.yaw   += event.motion.xrel * mouseSensitivity;
+            camera.pitch -= event.motion.yrel * mouseSensitivity; // move up -> look up
+
+            // Clamp pitch to avoid flipping (gimbal singularity)
+            if (camera.pitch > 89.0f)  camera.pitch = 89.0f;
+            if (camera.pitch < -89.0f) camera.pitch = -89.0f;
+
+            // Normalize yaw to [-180, 180] range to keep numbers bounded
+            if (camera.yaw > 180.0f)  camera.yaw -= 360.0f;
+            if (camera.yaw < -180.0f) camera.yaw += 360.0f;
+          }
         }
       }
 
@@ -393,7 +544,7 @@ int main()
       SDL_SetRenderDrawColor(renderer, 0,0,0,255);
       SDL_RenderClear(renderer);
       
-      drawFloor(renderer,camera,10,1.0f);
+      drawFloor(renderer,camera,20,1.0f);
 
       drawAxesWithLabels(renderer,camera,font);
 
