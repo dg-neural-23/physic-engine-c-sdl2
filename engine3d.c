@@ -1,8 +1,15 @@
 #include <stdio.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_ttf.h>
 #include <stdbool.h>
 #include <math.h>
+
+// Cross-platform SDL includes
+#ifdef _WIN32
+    #include <SDL.h>
+    #include <SDL_ttf.h>
+#else
+    #include <SDL2/SDL.h>
+    #include <SDL2/SDL_ttf.h>
+#endif
 
 
 #define WIDTH 900
@@ -425,8 +432,11 @@ void drawFloor(SDL_Renderer* renderer, Camera cam, int size, float spacing) {
       }
     }
   }
-int main()
+int main(int argc, char *argv[])
 {
+  // Suppress unused parameter warnings
+  (void)argc;
+  (void)argv;
 
   if(SDL_Init(0) < 0) {
     printf("Błąd inicjalizacji SDL: %s\n", SDL_GetError());
@@ -463,9 +473,32 @@ int main()
    if (SDL_SetRelativeMouseMode(SDL_TRUE) != 0) {
      fprintf(stderr, "Nie udało się włączyć trybu względnego myszy: %s\n", SDL_GetError());
    }
-   TTF_Font* font = TTF_OpenFont("/usr/share/fonts/TTF/Hack-Regular.ttf",12);
+   
+   // Cross-platform font loading
+   TTF_Font* font = NULL;
+   const char* fontPaths[] = {
+       "./fonts/Hack-Regular.ttf",                    // Local font (cross-platform)
+       "/usr/share/fonts/TTF/Hack-Regular.ttf",       // Linux (Arch/Manjaro)
+       "/usr/share/fonts/truetype/hack/Hack-Regular.ttf", // Linux (Ubuntu/Debian)
+       "C:/Windows/Fonts/arial.ttf",                  // Windows fallback
+       "C:/Windows/Fonts/consola.ttf",                // Windows Consolas
+       NULL
+   };
+   
+   for (int i = 0; fontPaths[i] != NULL; i++) {
+       font = TTF_OpenFont(fontPaths[i], 12);
+       if (font) {
+           printf("Loaded font: %s\n", fontPaths[i]);
+           break;
+       }
+   }
+   
    if(!font){
     printf("błąd ładowania czcionki: %s\n", TTF_GetError());
+    printf("Próbowano ścieżek:\n");
+    for (int i = 0; fontPaths[i] != NULL; i++) {
+        printf("  - %s\n", fontPaths[i]);
+    }
     TTF_Quit();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
