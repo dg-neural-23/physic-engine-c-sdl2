@@ -6,6 +6,7 @@
 
 
 #define WIDTH 900
+#define MAX_OBJECTS 100
 #define HEIGHT 600
 #define M_PI 3.14159265358979323846
 #define GRAVITY -9.81f
@@ -19,7 +20,7 @@ float mouseSensitivity = 0.1f; // FPS mouse look sensitivity (degrees per pixel)
 static int LINE_THICKNESS = 3;  // grubsze linie w pikselach (ekran)
 
 // Global clip planes for perspective
-static const float NEAR_PLANE = 0.02f;
+static const float NEAR_PLANE = 0.2f;
 static const float FAR_PLANE  = 500.0f;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -27,11 +28,19 @@ static const float FAR_PLANE  = 500.0f;
 typedef struct { float x,y,z; } Vertex;
 // rorate matrix
 typedef struct{ float matrix[4][4]; }Matrix4x4;
+typedef enum {
+  OBJECT_TYPE_PLAYER,
+  OBJECT_TYPE_DYNAMIC,
+  OBJECT_TYPE_STATIC
+}ObjectType;
+
 //physics object
 typedef struct PhysicsObject {
   Vertex position;
   Vertex velocity;
   Vertex force;
+  ObjectType type;
+  float height;
   float mass;
 }PhysicsObject;
 //Camera;
@@ -40,15 +49,18 @@ typedef struct {
   float yaw, pitch; // rotation angles (in degrees): yaw (left/right), pitch (up/down)
   float fov;
 }Camera;
-
+PhysicsObject object[100];
+int objCount = 0;
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //init camera
 Camera camera = {
   .physics = {
-    .position = {5.0f, 1.7f, -10.0f}, // wysokość jak postać w FPS (~1.7m wzrostu)
+    .position = {5.0f, 0.0f, -10.0f}, // wysokość jak postać w FPS (~1.7m wzrostu)
     .velocity = {0.0f, 0.0f, 0.0f},
     .force = {0.0f, 0.0f, 0.0f},
-    .mass = 1.0f
+    .mass = 1.0f,
+    .type = OBJECT_TYPE_PLAYER,
+    .height = 1.7f,
   },
   .yaw = 0.0f,
   .pitch = 0.0f,
@@ -390,20 +402,29 @@ void drawFloor(SDL_Renderer* renderer, Camera cam, int size, float spacing) {
   */
 }
   void checkFloorCollision(PhysicsObject* obj){
+  
+    if(obj->type == OBJECT_TYPE_PLAYER ) { 
+  float minEyeHight = FLOOR_HEIGHT + obj-> height;
 
-  if (obj->position.y < FLOOR_HEIGHT) {
-      obj->position.y = FLOOR_HEIGHT;
-    if(obj->velocity.y <0) {
-      obj-> velocity.y = -obj->velocity.y * 0.5f;
-      if(fabsf(obj->velocity.y) < 0.1f) {
-        obj->velocity.y = 0.0f;
-      }
-
-      obj->velocity.x *= 0.9f;
-      obj->velocity.z *= 0.9f;
-    }
+  if (obj->position.y < minEyeHight) {
+      obj->position.y = minEyeHight;
+      obj->velocity.y = 0.0f;
   }
 }
+  else if(obj->type == OBJECT_TYPE_DYNAMIC) {
+    if(obj->position.y < FLOOR_HEIGHT) {
+      obj->position.y = FLOOR_HEIGHT;
+      if(obj->velocity.y < 0) {
+        obj-> velocity.y = -obj->velocity.y * 0.5f;
+        if(fabsf(obj->velocity.y) < 0.1f) {
+          obj->velocity.y = 0.0f;
+      }
+        obj->velocity.x *= 0.9f;
+        obj->velocity.z *= 0.9f;
+        }
+      }
+    }
+  }
 int main()
 {
 
@@ -417,7 +438,7 @@ int main()
     return 1;
   }
   //tworzenie okna SDL
-   SDL_Window* window = SDL_CreateWindow("Raytracing", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH,HEIGHT, SDL_WINDOW_OPENGL);
+   SDL_Window* window = SDL_CreateWindow("Engine3d", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH,HEIGHT, SDL_WINDOW_OPENGL);
    if (!window) {
     printf("Błąd tworzenia okna: %s\n", SDL_GetError());
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -455,13 +476,13 @@ int main()
 
    int quit = EXIT_SUCCESS;
    SDL_Event event;
-   Uint32 lastTime = SDL_GetTicks64();
+   Uint64 lastTime = SDL_GetTicks64();
    float deltaTime = 0.0f;
 
    while(!quit) {
     //obsluga deltatime
     
-    Uint32 currentTime = SDL_GetTicks();
+    Uint64 currentTime = SDL_GetTicks64();
     deltaTime = (currentTime - lastTime) / 1000.0f; // Konwersja na sekundy
     lastTime = currentTime;
     
@@ -540,8 +561,12 @@ int main()
 
       updatePhysics(&camera.physics,deltaTime);
 
+      for(int i = 0; i < objCount; i++){
+        updatePhysics(&object[i], deltaTime);
+      }
+
       //czyszczenie ekranu + czarne tło
-      SDL_SetRenderDrawColor(renderer, 0,0,0,255);
+      SDL_SetRenderDrawColor(renderer, 15,15,15,255);
       SDL_RenderClear(renderer);
       
       drawFloor(renderer,camera,20,1.0f);
